@@ -1,4 +1,4 @@
-﻿import { app } from "../../../scripts/app.js";
+import { app } from "../../../scripts/app.js";
 
 const EXTENSION_NAME = "LinkFX";
 const SIDEBAR_TAB_ID = "linkfx";
@@ -16,6 +16,16 @@ let staticTime = 5000;
 const ropePhysics = new Map();
 let lastRopeCleanup = 0;
 
+// GIF 功能相关变量
+let gifEnabled = false;
+let gifUrl = "";
+let gifSize = 32;
+let gifSpeed = 0.3;
+let gifPosition = 0.5;
+let gifContainer = null;
+const gifElements = new Map();
+let gifLinkData = new Map();
+
 const TARGET_FPS = 45;
 const FRAME_TIME = 1000 / TARGET_FPS;
 
@@ -32,7 +42,7 @@ const ANIMATION_MODES = [
     { id: "selected", icon: "\uD83C\uDFAF", label: "Selected Node" }
 ];
 
-const DEBUG = false;
+const DEBUG = false; // 调试模式（生产环境应设为 false）
 const log = (...args) => { if (DEBUG) console.info(LOG_PREFIX, ...args); };
 const warn = (...args) => console.warn(LOG_PREFIX, ...args);
 
@@ -687,9 +697,13 @@ function startAnimationLoop() {
         animationLoopId = requestAnimationFrame(loop);
         if (currentTime - lastTime < FRAME_TIME) return;
         lastTime = currentTime;
-        const needsRedraw = (currentEffect !== null && animationMode !== "static") || gravityEnabled;
+        const needsRedraw = (currentEffect !== null && animationMode !== "static") || gravityEnabled || gifEnabled;
         if (needsRedraw && app && app.canvas) {
             if (app.canvas.setDirty) app.canvas.setDirty(true, true);
+        }
+        // 更新 GIF 位置
+        if (gifEnabled && gifUrl) {
+            updateGifPositions(currentTime);
         }
     };
     animationLoopId = requestAnimationFrame(loop);
@@ -779,6 +793,451 @@ function buildSidebarContent(container) {
     modeSection.appendChild(modeButtons);
     container.appendChild(modeSection);
 
+    // GIF 功能配置区域
+    const gifSection = document.createElement("div");
+    gifSection.style.marginBottom = "12px";
+    gifSection.style.padding = "8px";
+    gifSection.style.background = "var(--p-surface-ground, rgba(0,0,0,0.2))";
+    gifSection.style.borderRadius = "8px";
+    
+    const gifHeader = document.createElement("div");
+    gifHeader.style.display = "flex";
+    gifHeader.style.alignItems = "center";
+    gifHeader.style.justifyContent = "space-between";
+    gifHeader.style.marginBottom = "8px";
+    
+    const gifTitle = document.createElement("div");
+    gifTitle.style.display = "flex";
+    gifTitle.style.alignItems = "center";
+    gifTitle.style.gap = "8px";
+    gifTitle.innerHTML = "<span style=\"font-size:16px;\">🎬</span><span style=\"font-size:11px;font-weight:600;color:var(--p-text-color, #e0e0e0);\">GIF on Link</span>";
+    gifHeader.appendChild(gifTitle);
+    
+    const gifToggle = document.createElement("div");
+    gifToggle.style.position = "relative";
+    gifToggle.style.width = "32px";
+    gifToggle.style.height = "18px";
+    gifToggle.style.borderRadius = "9px";
+    gifToggle.style.background = gifEnabled ? "rgba(100,200,100,0.8)" : "rgba(100,100,100,0.4)";
+    gifToggle.style.cursor = "pointer";
+    gifToggle.style.transition = "all 0.2s ease";
+    
+    const gifToggleKnob = document.createElement("div");
+    gifToggleKnob.style.width = "14px";
+    gifToggleKnob.style.height = "14px";
+    gifToggleKnob.style.borderRadius = "50%";
+    gifToggleKnob.style.background = "white";
+    gifToggleKnob.style.position = "absolute";
+    gifToggleKnob.style.top = "2px";
+    gifToggleKnob.style.left = gifEnabled ? "16px" : "2px";
+    gifToggleKnob.style.transition = "all 0.2s ease";
+    gifToggleKnob.style.boxShadow = "0 1px 2px rgba(0,0,0,0.2)";
+    gifToggle.appendChild(gifToggleKnob);
+    gifHeader.appendChild(gifToggle);
+    gifSection.appendChild(gifHeader);
+    
+    gifToggle.addEventListener("click", function(e) {
+        e.stopPropagation();
+        gifEnabled = !gifEnabled;
+        if (sidebarContainer) buildSidebarContent(sidebarContainer);
+        if (gifEnabled) {
+            ensureGifContainer();
+            if (gifUrl) {
+                // 如果有 GIF URL，确保动画循环运行
+                startAnimationLoop();
+            }
+        } else {
+            cleanupGifElements();
+            if (currentEffect === null && !gravityEnabled) stopAnimationLoop();
+        }
+        if (app && app.graph) app.graph.setDirtyCanvas(true, true);
+        log("GIF enabled: " + gifEnabled);
+    });
+    
+    if (gifEnabled) {
+        // 文件选择器
+        const fileInput = document.createElement("input");
+        fileInput.type = "file";
+        fileInput.accept = "image/gif";
+        fileInput.style.display = "none";
+        fileInput.addEventListener("change", function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            if (!file.type.startsWith("image/gif")) {
+                warn("请选择 GIF 格式的文件");
+                return;
+            }
+            
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                const base64 = event.target.result;
+                gifUrl = base64;
+                gifUrlInput.value = "[已选择: " + file.name + "]"; // 显示文件名，标记为已选择
+                gifUrlInput.dataset.isFileSelected = "true"; // 标记为文件选择
+                cleanupGifElements();
+                ensureGifContainer(); // 确保容器存在
+                
+                // 确保动画循环运行
+                if (gifEnabled) {
+                    startAnimationLoop();
+                    log("Animation loop started for GIF");
+                }
+                
+                updateStatus();
+                
+                // 强制重绘 Canvas
+                if (app && app.canvas) {
+                    if (app.canvas.setDirty) {
+                        app.canvas.setDirty(true, true);
+                    }
+                    if (app.canvas.dirty_canvas !== undefined) {
+                        app.canvas.dirty_canvas = true;
+                    }
+                }
+                if (app && app.graph) {
+                    app.graph.setDirtyCanvas(true, true);
+                }
+                
+                log("GIF file loaded via file picker: " + file.name + ", base64 length: " + base64.length);
+                log("gifEnabled: " + gifEnabled + ", gifUrl is base64: " + gifUrl.startsWith("data:image"));
+                
+                // 视觉反馈
+                applyButton.textContent = "✓";
+                applyButton.style.background = "rgba(100,200,100,0.8)";
+                setTimeout(function() {
+                    applyButton.textContent = "应用";
+                    applyButton.style.background = "var(--p-primary-color, rgba(100,150,255,0.8))";
+                }, 1000);
+            };
+            reader.onerror = function() {
+                warn("文件读取失败");
+            };
+            reader.readAsDataURL(file);
+        });
+        gifSection.appendChild(fileInput);
+        
+        const gifInputContainer = document.createElement("div");
+        gifInputContainer.style.display = "flex";
+        gifInputContainer.style.gap = "4px";
+        gifInputContainer.style.marginBottom = "6px";
+        
+        const gifUrlInput = document.createElement("input");
+        gifUrlInput.type = "text";
+        gifUrlInput.placeholder = "GIF URL 或点击📁按钮选择文件";
+        // 如果 gifUrl 是 base64，显示提示，否则显示原值
+        if (gifUrl && gifUrl.startsWith("data:image")) {
+            gifUrlInput.value = "[已选择本地文件]";
+            gifUrlInput.dataset.isFileSelected = "true";
+        } else {
+            gifUrlInput.value = gifUrl;
+            gifUrlInput.dataset.isFileSelected = "false";
+        }
+        
+        // 防止用户输入覆盖文件选择器的 base64
+        gifUrlInput.addEventListener("input", function() {
+            if (this.dataset.isFileSelected === "true" && gifUrl && gifUrl.startsWith("data:image")) {
+                // 如果当前是文件选择的结果，阻止手动输入覆盖
+                const currentValue = this.value;
+                if (!currentValue.startsWith("[已选择") && currentValue !== gifUrl) {
+                    warn("检测到文件选择器已加载文件，手动输入将被忽略。如需使用 URL，请先清除当前 GIF。");
+                    // 恢复显示
+                    setTimeout(() => {
+                        if (gifUrl && gifUrl.startsWith("data:image")) {
+                            this.value = "[已选择本地文件]";
+                        }
+                    }, 100);
+                }
+            }
+        });
+        gifUrlInput.style.flex = "1";
+        gifUrlInput.style.padding = "6px 8px";
+        gifUrlInput.style.borderRadius = "4px";
+        gifUrlInput.style.border = "1px solid var(--p-divider-color, rgba(255,255,255,0.1))";
+        gifUrlInput.style.background = "var(--p-surface-ground, rgba(0,0,0,0.3))";
+        gifUrlInput.style.color = "var(--p-text-color, #e0e0e0)";
+        gifUrlInput.style.fontSize = "10px";
+        gifUrlInput.style.fontFamily = "inherit";
+        gifUrlInput.style.boxSizing = "border-box";
+        
+        // 文件选择按钮
+        const fileSelectButton = document.createElement("button");
+        fileSelectButton.textContent = "📁";
+        fileSelectButton.title = "选择本地 GIF 文件";
+        fileSelectButton.style.padding = "6px 10px";
+        fileSelectButton.style.borderRadius = "4px";
+        fileSelectButton.style.border = "none";
+        fileSelectButton.style.background = "var(--p-surface-ground, rgba(0,0,0,0.3))";
+        fileSelectButton.style.color = "var(--p-text-color, #e0e0e0)";
+        fileSelectButton.style.fontSize = "12px";
+        fileSelectButton.style.cursor = "pointer";
+        fileSelectButton.style.fontFamily = "inherit";
+        fileSelectButton.style.flexShrink = "0";
+        fileSelectButton.style.transition = "all 100ms ease";
+        fileSelectButton.addEventListener("mouseenter", function() {
+            this.style.background = "var(--p-surface-hover, rgba(255,255,255,0.1))";
+        });
+        fileSelectButton.addEventListener("mouseleave", function() {
+            this.style.background = "var(--p-surface-ground, rgba(0,0,0,0.3))";
+        });
+        fileSelectButton.addEventListener("click", function() {
+            fileInput.click();
+        });
+        
+        // 应用按钮
+        const applyButton = document.createElement("button");
+        applyButton.textContent = "应用";
+        applyButton.style.padding = "6px 12px";
+        applyButton.style.borderRadius = "4px";
+        applyButton.style.border = "none";
+        applyButton.style.background = "var(--p-primary-color, rgba(100,150,255,0.8))";
+        applyButton.style.color = "white";
+        applyButton.style.fontSize = "10px";
+        applyButton.style.fontWeight = "600";
+        applyButton.style.cursor = "pointer";
+        applyButton.style.fontFamily = "inherit";
+        applyButton.style.whiteSpace = "nowrap";
+        applyButton.style.transition = "all 100ms ease";
+        applyButton.style.flexShrink = "0";
+        
+        applyButton.addEventListener("mouseenter", function() {
+            this.style.background = "var(--p-primary-color, rgba(100,150,255,1))";
+            this.style.transform = "scale(1.05)";
+        });
+        applyButton.addEventListener("mouseleave", function() {
+            this.style.background = "var(--p-primary-color, rgba(100,150,255,0.8))";
+            this.style.transform = "scale(1)";
+        });
+        
+        // 状态提示
+        const gifStatus = document.createElement("div");
+        gifStatus.style.fontSize = "9px";
+        gifStatus.style.color = gifUrl ? "rgba(100,200,100,0.8)" : "var(--p-text-muted-color, #888)";
+        gifStatus.style.marginBottom = "6px";
+        gifStatus.style.padding = "4px 8px";
+        gifStatus.style.borderRadius = "4px";
+        gifStatus.style.background = gifUrl ? "rgba(100,200,100,0.1)" : "transparent";
+        
+        // 更新状态提示的函数
+        const updateStatus = function() {
+            if (gifUrl) {
+                let displayText = "";
+                if (gifUrl.startsWith("data:image")) {
+                    displayText = "✓ GIF 已加载: [本地文件]";
+                } else if (gifUrl.length > 30) {
+                    displayText = "✓ GIF 已加载: " + gifUrl.substring(0, 30) + "...";
+                } else {
+                    displayText = "✓ GIF 已加载: " + gifUrl;
+                }
+                gifStatus.textContent = displayText;
+                gifStatus.style.color = "rgba(100,200,100,0.8)";
+                gifStatus.style.background = "rgba(100,200,100,0.1)";
+            } else {
+                gifStatus.textContent = "⚠ 请输入 GIF URL 或选择本地文件";
+                gifStatus.style.color = "var(--p-text-muted-color, #888)";
+                gifStatus.style.background = "transparent";
+            }
+        };
+        
+        // 初始化状态提示
+        updateStatus();
+        
+        // 应用 GIF 的函数
+        const applyGif = function() {
+            // 如果当前是文件选择的结果，直接使用 base64
+            if (gifUrlInput.dataset.isFileSelected === "true" && gifUrl && gifUrl.startsWith("data:image")) {
+                log("Using file picker selected GIF (base64)");
+                cleanupGifElements();
+                ensureGifContainer(); // 确保容器存在
+                if (gifEnabled) startAnimationLoop(); // 确保动画循环运行
+                if (app && app.graph) app.graph.setDirtyCanvas(true, true);
+                updateStatus();
+                applyButton.textContent = "✓";
+                applyButton.style.background = "rgba(100,200,100,0.8)";
+                setTimeout(function() {
+                    applyButton.textContent = "应用";
+                    applyButton.style.background = "var(--p-primary-color, rgba(100,150,255,0.8))";
+                }, 1000);
+                return;
+            }
+            
+            const newUrl = gifUrlInput.value.trim();
+            if (!newUrl || newUrl.startsWith("[已选择")) {
+                if (gifUrl && gifUrl.startsWith("data:image")) {
+                    // 已经是 base64，直接应用
+                    cleanupGifElements();
+                    ensureGifContainer();
+                    if (gifEnabled) startAnimationLoop();
+                    if (app && app.graph) app.graph.setDirtyCanvas(true, true);
+                    updateStatus();
+                    applyButton.textContent = "✓";
+                    applyButton.style.background = "rgba(100,200,100,0.8)";
+                    setTimeout(function() {
+                        applyButton.textContent = "应用";
+                        applyButton.style.background = "var(--p-primary-color, rgba(100,150,255,0.8))";
+                    }, 1000);
+                    return;
+                }
+                warn("GIF URL 不能为空");
+                return;
+            }
+            
+            // 清除文件选择标记
+            gifUrlInput.dataset.isFileSelected = "false";
+            
+            // 检查是否是 base64 数据 URL
+            if (newUrl.startsWith("data:image")) {
+                gifUrl = newUrl;
+            } else if (newUrl.startsWith("http://") || newUrl.startsWith("https://")) {
+                // 完整的 HTTP/HTTPS URL
+                gifUrl = newUrl;
+            } else if (newUrl.startsWith("/")) {
+                // 绝对路径，直接使用
+                gifUrl = newUrl;
+            } else if (newUrl.startsWith("file://") || /^[A-Za-z]:/.test(newUrl)) {
+                // 本地文件路径，尝试提取文件名并转换为扩展路径
+                const fileName = newUrl.split(/[/\\]/).pop();
+                if (fileName) {
+                    gifUrl = "/extensions/ComfyUI_LinkFX/" + fileName;
+                    warn("已转换为扩展路径: " + gifUrl + "，如果文件不存在，请使用文件选择器");
+                } else {
+                    warn("无法从路径提取文件名，请使用文件选择器选择文件");
+                    return;
+                }
+            } else {
+                // 可能是文件名，尝试从扩展目录加载
+                // 检查是否包含路径分隔符
+                if (!newUrl.includes("/") && !newUrl.includes("\\") && newUrl.includes(".")) {
+                    // 看起来是文件名，尝试从扩展目录加载
+                    gifUrl = "/extensions/ComfyUI_LinkFX/" + newUrl;
+                    warn("假设文件在扩展目录，使用路径: " + gifUrl + "，如果文件不存在，请使用文件选择器");
+                } else {
+                    // 可能是相对路径或其他格式，直接使用
+                    gifUrl = newUrl;
+                }
+            }
+            
+            cleanupGifElements();
+            ensureGifContainer(); // 确保容器存在
+            if (gifEnabled) startAnimationLoop(); // 确保动画循环运行
+            if (app && app.graph) app.graph.setDirtyCanvas(true, true);
+            log("GIF URL applied: " + (gifUrl.length > 50 ? gifUrl.substring(0, 50) + "..." : gifUrl));
+            
+            // 更新状态
+            updateStatus();
+            
+            // 视觉反馈
+            applyButton.textContent = "✓";
+            applyButton.style.background = "rgba(100,200,100,0.8)";
+            setTimeout(function() {
+                applyButton.textContent = "应用";
+                applyButton.style.background = "var(--p-primary-color, rgba(100,150,255,0.8))";
+            }, 1000);
+        };
+        
+        applyButton.addEventListener("click", applyGif);
+        
+        // Enter 键支持
+        gifUrlInput.addEventListener("keydown", function(e) {
+            if (e.key === "Enter") {
+                e.preventDefault();
+                applyGif();
+            }
+        });
+        
+        // change 事件也保留（失去焦点时应用）
+        gifUrlInput.addEventListener("change", applyGif);
+        
+        gifInputContainer.appendChild(gifUrlInput);
+        gifInputContainer.appendChild(fileSelectButton);
+        gifInputContainer.appendChild(applyButton);
+        gifSection.appendChild(gifInputContainer);
+        gifSection.appendChild(gifStatus);
+        
+        // 清除按钮
+        if (gifUrl) {
+            const clearButton = document.createElement("button");
+            clearButton.textContent = "清除 GIF";
+            clearButton.style.width = "100%";
+            clearButton.style.padding = "6px 8px";
+            clearButton.style.marginBottom = "6px";
+            clearButton.style.borderRadius = "4px";
+            clearButton.style.border = "none";
+            clearButton.style.background = "rgba(200,80,80,0.2)";
+            clearButton.style.color = "var(--p-text-color, #e0e0e0)";
+            clearButton.style.fontSize = "10px";
+            clearButton.style.cursor = "pointer";
+            clearButton.style.fontFamily = "inherit";
+            clearButton.style.transition = "all 100ms ease";
+            clearButton.addEventListener("mouseenter", function() {
+                this.style.background = "rgba(200,80,80,0.4)";
+            });
+            clearButton.addEventListener("mouseleave", function() {
+                this.style.background = "rgba(200,80,80,0.2)";
+            });
+            clearButton.addEventListener("click", function() {
+                gifUrl = "";
+                gifUrlInput.value = "";
+                gifUrlInput.dataset.isFileSelected = "false";
+                cleanupGifElements();
+                if (sidebarContainer) buildSidebarContent(sidebarContainer);
+                if (app && app.graph) app.graph.setDirtyCanvas(true, true);
+                log("GIF cleared");
+            });
+            gifSection.appendChild(clearButton);
+        }
+        
+        const gifSizeLabel = document.createElement("div");
+        gifSizeLabel.textContent = "Size: " + gifSize + "px";
+        gifSizeLabel.style.fontSize = "9px";
+        gifSizeLabel.style.color = "var(--p-text-muted-color, #888)";
+        gifSizeLabel.style.marginBottom = "4px";
+        gifSection.appendChild(gifSizeLabel);
+        
+        const gifSizeSlider = document.createElement("input");
+        gifSizeSlider.type = "range";
+        gifSizeSlider.min = "16";
+        gifSizeSlider.max = "128";
+        gifSizeSlider.value = gifSize;
+        gifSizeSlider.style.width = "100%";
+        gifSizeSlider.style.marginBottom = "6px";
+        gifSizeSlider.addEventListener("input", function() {
+            gifSize = parseInt(this.value);
+            // 更新所有已存在的 GIF 元素的大小
+            for (const [key, img] of gifElements) {
+                if (img && img.parentElement) {
+                    img.style.width = gifSize + "px";
+                    img.style.height = gifSize + "px";
+                }
+            }
+            if (sidebarContainer) buildSidebarContent(sidebarContainer);
+            if (app && app.graph) app.graph.setDirtyCanvas(true, true);
+        });
+        gifSection.appendChild(gifSizeSlider);
+        
+        const gifSpeedLabel = document.createElement("div");
+        gifSpeedLabel.textContent = "Speed: " + gifSpeed.toFixed(1) + "x";
+        gifSpeedLabel.style.fontSize = "9px";
+        gifSpeedLabel.style.color = "var(--p-text-muted-color, #888)";
+        gifSpeedLabel.style.marginBottom = "4px";
+        gifSection.appendChild(gifSpeedLabel);
+        
+        const gifSpeedSlider = document.createElement("input");
+        gifSpeedSlider.type = "range";
+        gifSpeedSlider.min = "0.1";
+        gifSpeedSlider.max = "2.0";
+        gifSpeedSlider.step = "0.1";
+        gifSpeedSlider.value = gifSpeed;
+        gifSpeedSlider.style.width = "100%";
+        gifSpeedSlider.addEventListener("input", function() {
+            gifSpeed = parseFloat(this.value);
+            if (sidebarContainer) buildSidebarContent(sidebarContainer);
+        });
+        gifSection.appendChild(gifSpeedSlider);
+    }
+    
+    container.appendChild(gifSection);
+
     const gravitySection = document.createElement("div");
     gravitySection.style.marginBottom = "12px";
     gravitySection.style.padding = "8px";
@@ -854,7 +1313,7 @@ function buildSidebarContent(container) {
         gravityEnabled = !gravityEnabled;
         if (sidebarContainer) buildSidebarContent(sidebarContainer);
         if (gravityEnabled) startAnimationLoop();
-        else if (currentEffect === null || animationMode === "static") stopAnimationLoop();
+        else if (currentEffect === null && !gifEnabled && animationMode === "static") stopAnimationLoop();
         if (!gravityEnabled) ropePhysics.clear();
         if (app && app.graph) app.graph.setDirtyCanvas(true, true);
         log("gravity: " + gravityEnabled);
@@ -927,8 +1386,8 @@ function createModeButton(mode) {
     btn.addEventListener("click", function () {
         animationMode = this.dataset.modeId;
         if (sidebarContainer) buildSidebarContent(sidebarContainer);
-        if (animationMode === "static") stopAnimationLoop();
-        else if (currentEffect !== null) startAnimationLoop();
+        if (animationMode === "static" && !gifEnabled) stopAnimationLoop();
+        else if (currentEffect !== null || gifEnabled) startAnimationLoop();
         if (app && app.graph) app.graph.setDirtyCanvas(true, true);
         log("animation mode: " + animationMode);
     });
@@ -964,7 +1423,7 @@ function selectEffect(index) {
     currentEffect = index;
     if (sidebarContainer) buildSidebarContent(sidebarContainer);
     if (!installed && index !== null) installHooks();
-    const needsAnimation = (index !== null && animationMode !== "static") || gravityEnabled;
+    const needsAnimation = (index !== null && animationMode !== "static") || gravityEnabled || gifEnabled;
     if (needsAnimation) startAnimationLoop(); else stopAnimationLoop();
     if (app && app.graph) app.graph.setDirtyCanvas(true, true);
     log(index !== null ? "effect: " + EFFECTS[index].name : "effects disabled");
@@ -993,6 +1452,285 @@ function getTimeForEffect() {
     return performance.now();
 }
 
+// ========== GIF 功能相关函数 ==========
+
+function getCanvasContainer() {
+    if (!app || !app.canvas) {
+        log("getCanvasContainer: app or canvas not available");
+        return null;
+    }
+    const canvas = app.canvas.canvas;
+    if (!canvas) {
+        log("getCanvasContainer: canvas element not found");
+        return null;
+    }
+    
+    // 尝试多种方法找到正确的容器
+    let container = canvas.parentElement;
+    
+    // 如果父元素存在，尝试找到包含它的相对定位容器
+    if (container) {
+        // 查找具有 position: relative 的父容器
+        let current = container;
+        while (current && current !== document.body) {
+            const style = window.getComputedStyle(current);
+            if (style.position === "relative" || style.position === "absolute") {
+                container = current;
+                break;
+            }
+            current = current.parentElement;
+        }
+    }
+    
+    if (DEBUG) {
+        log("getCanvasContainer: found container: " + (container ? container.tagName + "#" + (container.id || "no-id") : "null"));
+    }
+    
+    return container;
+}
+
+function ensureGifContainer() {
+    if (gifContainer && gifContainer.parentElement) return gifContainer;
+    const container = getCanvasContainer();
+    if (!container) {
+        log("Cannot find canvas container");
+        return null;
+    }
+    
+    // 如果容器已存在但被移除，重新创建
+    if (gifContainer && !gifContainer.parentElement) {
+        gifContainer = null;
+    }
+    
+    if (!gifContainer) {
+        gifContainer = document.createElement("div");
+        gifContainer.id = "linkfx-gif-container";
+    }
+    
+    gifContainer.style.position = "absolute";
+    gifContainer.style.top = "0";
+    gifContainer.style.left = "0";
+    gifContainer.style.width = "100%";
+    gifContainer.style.height = "100%";
+    gifContainer.style.pointerEvents = "none";
+    gifContainer.style.zIndex = "10000";
+    gifContainer.style.overflow = "visible";
+    
+    if (DEBUG) {
+        log("GIF container created: position=" + gifContainer.style.position + ", zIndex=" + gifContainer.style.zIndex);
+    }
+    
+    if (!gifContainer.parentElement) {
+        container.appendChild(gifContainer);
+        log("GIF container created and appended");
+    }
+    
+    return gifContainer;
+}
+
+function getLinkKey(link, a, b) {
+    if (link && link.id != null) {
+        return "link_" + link.id;
+    }
+    return "pos_" + Math.round(a[0] / 10) + "_" + Math.round(a[1] / 10) + "_" + Math.round(b[0] / 10) + "_" + Math.round(b[1] / 10);
+}
+
+function createGifElement(linkKey) {
+    const container = ensureGifContainer();
+    if (!container) return null;
+    
+    const img = document.createElement("img");
+    img.style.position = "absolute";
+    img.style.width = gifSize + "px";
+    img.style.height = gifSize + "px";
+    img.style.objectFit = "contain";
+    img.style.pointerEvents = "none";
+    img.style.userSelect = "none";
+    img.style.transformOrigin = "center center";
+    img.style.display = "none";
+    
+    // 添加错误处理
+    img.onerror = function() {
+        warn("GIF 加载失败: " + gifUrl + "，请检查文件路径或使用文件选择器");
+        this.style.display = "none";
+    };
+    
+    img.onload = function() {
+        log("GIF 加载成功: " + gifUrl.substring(0, 50) + "...");
+        log("GIF image dimensions: " + this.naturalWidth + "x" + this.naturalHeight);
+        log("GIF element style: display=" + this.style.display + ", visibility=" + this.style.visibility + ", opacity=" + this.style.opacity);
+    };
+    
+    img.src = gifUrl;
+    
+    container.appendChild(img);
+    gifElements.set(linkKey, img);
+    log("GIF element created for: " + linkKey);
+    return img;
+}
+
+function updateGifPosition(linkKey, a, b, ropePoints, now, ctx) {
+    if (!gifEnabled || !gifUrl) {
+        if (DEBUG) log("updateGifPosition skipped: gifEnabled=" + gifEnabled + ", gifUrl=" + (gifUrl ? "set" : "not set"));
+        return;
+    }
+    
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (len < 10) {
+        if (DEBUG) log("updateGifPosition skipped: link too short: " + len);
+        return; // 连线太短，不显示
+    }
+    
+    const cp = Math.max(len * 0.3, 40);
+    
+    // 计算 GIF 在连线上的位置（0-1之间）
+    let t = gifPosition;
+    if (animationMode !== "static") {
+        // 动态移动：根据时间计算位置
+        const cycleTime = 3000 / gifSpeed; // 完整循环时间（毫秒）
+        const cyclePos = ((now % cycleTime) / cycleTime);
+        t = cyclePos;
+    }
+    
+    // 获取连线上的点（使用和效果函数相同的坐标系统）
+    const pt = getSmartPoint(t, a, b, cp, ropePoints);
+    const px = pt[0];
+    const py = pt[1];
+    
+    // 计算旋转角度（沿连线方向）
+    let angle = 0;
+    if (t < 0.99) {
+        const nextT = Math.min(t + 0.01, 1);
+        const nextPt = getSmartPoint(nextT, a, b, cp, ropePoints);
+        const dx = nextPt[0] - px;
+        const dy = nextPt[1] - py;
+        angle = Math.atan2(dy, dx) * (180 / Math.PI);
+    } else {
+        // 最后一点，使用前一点的方向
+        const prevT = Math.max(t - 0.01, 0);
+        const prevPt = getSmartPoint(prevT, a, b, cp, ropePoints);
+        const dx = px - prevPt[0];
+        const dy = py - prevPt[1];
+        angle = Math.atan2(dy, dx) * (180 / Math.PI);
+    }
+    
+    // 获取或创建 GIF 元素
+    let img = gifElements.get(linkKey);
+    if (!img) {
+        img = createGifElement(linkKey);
+        if (!img) return;
+    }
+    
+    // 确保容器存在
+    if (!gifContainer || !gifContainer.parentElement) {
+        ensureGifContainer();
+        if (!gifContainer) return;
+    }
+    
+    // 获取 Canvas 元素
+    const canvas = app.canvas.canvas;
+    if (!canvas) return;
+    
+    // 获取 Canvas 和容器的位置信息
+    const canvasRect = canvas.getBoundingClientRect();
+    const containerRect = gifContainer.getBoundingClientRect();
+    
+    if (!canvasRect || !containerRect) return;
+    
+    // 获取 Canvas 2D 上下文的变换矩阵
+    // 如果传入了 ctx，使用它；否则获取新的上下文（可能不准确）
+    let transform = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+    
+    if (ctx && typeof ctx.getTransform === "function") {
+        // 使用传入的上下文（最准确，因为它有当前的变换状态）
+        transform = ctx.getTransform();
+    } else {
+        // 尝试从 Canvas 对象获取变换信息
+        const canvasObj = app.canvas;
+        if (canvasObj) {
+            const scale = canvasObj.ds || canvasObj.scale || 1;
+            const offset = canvasObj.offset || (canvasObj.graph && canvasObj.graph.offset) || [0, 0];
+            transform.a = scale;
+            transform.d = scale;
+            transform.e = -offset[0] * scale;
+            transform.f = -offset[1] * scale;
+        }
+    }
+    
+    // 使用变换矩阵转换坐标（和 Canvas 绘制使用相同的变换）
+    // 变换矩阵公式：screenX = a * worldX + c * worldY + e
+    //                screenY = b * worldX + d * worldY + f
+    const screenX = transform.a * px + transform.c * py + transform.e + canvasRect.left;
+    const screenY = transform.b * px + transform.d * py + transform.f + canvasRect.top;
+    
+    // 转换为相对于容器的坐标
+    const x = screenX - containerRect.left;
+    const y = screenY - containerRect.top;
+    
+    if (DEBUG) {
+        log("Canvas transform matrix: a=" + transform.a.toFixed(3) + ", d=" + transform.d.toFixed(3) + ", e=" + transform.e.toFixed(1) + ", f=" + transform.f.toFixed(1));
+        log("World(" + px.toFixed(1) + "," + py.toFixed(1) + ") -> Screen(" + screenX.toFixed(1) + "," + screenY.toFixed(1) + ") -> Container(" + x.toFixed(1) + "," + y.toFixed(1) + ")");
+    }
+    
+    // 更新 GIF 位置和旋转
+    // 使用 transform-origin: center 和 translate(-50%, -50%) 确保 GIF 中心点始终在连线上
+    // 这样无论 GIF 大小如何变化，都不会偏离连线位置
+    img.style.left = x + "px";
+    img.style.top = y + "px";
+    img.style.transform = "translate(-50%, -50%) rotate(" + angle + "deg)";
+    img.style.transformOrigin = "center center";
+    img.style.display = "block";
+    img.style.visibility = "visible";
+    img.style.opacity = "1";
+    img.style.zIndex = "10000";
+    
+    if (DEBUG) {
+        log("GIF positioned: linkKey=" + linkKey + 
+            ", world(" + px.toFixed(1) + "," + py.toFixed(1) + 
+            ") -> container(" + x.toFixed(1) + "," + y.toFixed(1) + 
+            "), angle=" + angle.toFixed(1) + 
+            ", size=" + gifSize +
+            ", canvasScale=" + scale.toFixed(3) +
+            ", canvasOffset=(" + offsetX.toFixed(1) + "," + offsetY.toFixed(1) + ")");
+    }
+    
+    // 保存链接数据用于清理
+    gifLinkData.set(linkKey, {
+        lastSeen: now,
+        a: [...a],
+        b: [...b]
+    });
+}
+
+function updateGifPositions(now) {
+    if (!gifContainer || !app || !app.canvas) return;
+    
+    // 清理过期的 GIF 元素
+    const keysToDelete = [];
+    for (const [key, data] of gifLinkData) {
+        if (now - data.lastSeen > 2000) {
+            keysToDelete.push(key);
+        }
+    }
+    for (const key of keysToDelete) {
+        const img = gifElements.get(key);
+        if (img && img.parentElement) {
+            img.parentElement.removeChild(img);
+        }
+        gifElements.delete(key);
+        gifLinkData.delete(key);
+    }
+}
+
+function cleanupGifElements() {
+    if (gifContainer) {
+        gifContainer.innerHTML = "";
+    }
+    gifElements.clear();
+    gifLinkData.clear();
+    gifContainer = null;
+}
+
 function installHooks() {
     if (installed) return;
     let LGraphCanvas = (typeof globalThis !== "undefined" && globalThis.LiteGraph && globalThis.LiteGraph.LGraphCanvas) ? globalThis.LiteGraph.LGraphCanvas : null;
@@ -1007,20 +1745,35 @@ function installHooks() {
             options = options || {};
             const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
             const ropePoints = getRopePoints(link, a, b, len);
+            
+            // 处理 GIF 显示（必须在绘制连线之前，因为需要获取坐标和变换矩阵）
+            if (gifEnabled && gifUrl && shouldAnimateLink(link)) {
+                try {
+                    const now = getTimeForEffect();
+                    const linkKey = getLinkKey(link, a, b);
+                    updateGifPosition(linkKey, a, b, ropePoints, now, ctx);
+                } catch (err) { warn("GIF update failed", err); }
+            }
+            
+            // 绘制效果或连线
             if (currentEffect !== null && ctx && Array.isArray(a) && Array.isArray(b)) {
                 if (shouldAnimateLink(link)) {
                     try {
                         const now = getTimeForEffect();
                         EFFECTS[currentEffect].draw(ctx, a, b, now, len, ropePoints);
                     } catch (err) { warn("effect draw failed", err); }
-                    return;
+                    // GIF 和效果可以同时显示，所以不 return
                 }
             }
             if (gravityEnabled && ropePoints && ctx) {
                 drawRope(ctx, ropePoints, color || "rgba(150, 150, 150, 0.8)", 2);
-                return;
+                // 如果只有重力效果，不绘制原始连线
+                if (currentEffect === null) return;
             }
-            return originalRenderLink.call(this, ctx, a, b, link, skip_border, flow, color, start_dir, end_dir, options);
+            // 如果没有效果，绘制原始连线
+            if (currentEffect === null && !gravityEnabled) {
+                return originalRenderLink.call(this, ctx, a, b, link, skip_border, flow, color, start_dir, end_dir, options);
+            }
         };
         proto.renderLink = patchedRenderLink;
         log("hooked renderLink");
@@ -1030,20 +1783,37 @@ function installHooks() {
             const rest = Array.prototype.slice.call(arguments, 4);
             const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
             const ropePoints = getRopePoints(link, a, b, len);
+            
+            // 处理 GIF 显示（必须在绘制连线之前，因为需要获取坐标和变换矩阵）
+            if (gifEnabled && gifUrl && shouldAnimateLink(link)) {
+                try {
+                    const now = getTimeForEffect();
+                    const linkKey = getLinkKey(link, a, b);
+                    // 对于 drawLink，ctx 可能不是 Canvas 2D 上下文，尝试获取
+                    const canvasCtx = this.canvas ? this.canvas.getContext("2d") : ctx;
+                    updateGifPosition(linkKey, a, b, ropePoints, now, canvasCtx);
+                } catch (err) { warn("GIF update failed", err); }
+            }
+            
+            // 绘制效果或连线
             if (currentEffect !== null && ctx && Array.isArray(a) && Array.isArray(b)) {
                 if (shouldAnimateLink(link)) {
                     try {
                         const now = getTimeForEffect();
                         EFFECTS[currentEffect].draw(ctx, a, b, now, len, ropePoints);
                     } catch (err) { warn("effect draw failed", err); }
-                    return;
+                    // GIF 和效果可以同时显示，所以不 return
                 }
             }
             if (gravityEnabled && ropePoints && ctx) {
                 drawRope(ctx, ropePoints, "rgba(150, 150, 150, 0.8)", 2);
-                return;
+                // 如果只有重力效果，不绘制原始连线
+                if (currentEffect === null) return;
             }
-            return originalRenderLink.apply(this, [ctx, a, b, link].concat(rest));
+            // 如果没有效果，绘制原始连线
+            if (currentEffect === null && !gravityEnabled) {
+                return originalRenderLink.apply(this, [ctx, a, b, link].concat(rest));
+            }
         };
         proto.drawLink = patchedDrawLink;
         log("hooked drawLink");
