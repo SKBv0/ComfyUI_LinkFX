@@ -88,7 +88,6 @@ export function applyPreset(presetId) {
     commit({
         presetId: preset.id,
         physicsProfileId: preset.physicsProfileId,
-        qualityTierId: preset.qualityTierId,
         graphWeatherId: preset.graphWeatherId,
         temporalEchoEnabled: preset.temporalEcho
     });
@@ -122,15 +121,21 @@ export function setAnimationSpeed(animationSpeed) {
     commit({ animationSpeed });
 }
 
+let _cachedRuntime = null;
+let _cachedState = null;
+
 export function resolveRuntimeConfig(inputState = state) {
+    if (inputState === _cachedState && _cachedRuntime) return _cachedRuntime;
     const preset = findById(CINEMA_PRESETS, inputState.presetId, DEFAULT_STATE.presetId);
-    return {
+    _cachedRuntime = {
         ...inputState,
         preset,
         qualityTier: findById(QUALITY_TIERS, inputState.qualityTierId, DEFAULT_STATE.qualityTierId),
         physicsProfile: findById(PHYSICS_PROFILES, inputState.physicsProfileId, DEFAULT_STATE.physicsProfileId),
         graphWeather: findById(GRAPH_WEATHER, inputState.graphWeatherId, DEFAULT_STATE.graphWeatherId)
     };
+    _cachedState = inputState;
+    return _cachedRuntime;
 }
 
 let simulatedTime = 0;

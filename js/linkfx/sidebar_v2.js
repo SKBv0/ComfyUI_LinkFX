@@ -103,7 +103,8 @@ function createSectionShell(title, subtitle, palette) {
         borderRadius: "11px",
         border: `1px solid ${tint}`,
         background: "rgba(255,255,255,0.028)",
-        boxSizing: "border-box"
+        boxSizing: "border-box",
+        flex: "0 0 auto"
     });
 
     shell.appendChild(createEl("div", {
@@ -237,7 +238,8 @@ function createPresetHero(runtime) {
         padding: "18px 14px 13px",
         background: "rgba(14,17,26,0.94)",
         border: `1px solid ${hexToRgba(palette.secondary, 0.2)}`,
-        boxSizing: "border-box"
+        boxSizing: "border-box",
+        flex: "0 0 auto"
     });
     hero.appendChild(createEl("div", {
         position: "absolute",
@@ -611,7 +613,7 @@ function createColorSection(runtime) {
         textTransform: "uppercase",
         color: "rgba(255,255,255,0.52)"
     }, "Animation Speed"));
-    
+
     const speedBadge = createEl("div", {
         padding: "3px 7px",
         borderRadius: "999px",
@@ -846,12 +848,12 @@ function toggleLegacyDialog() {
     header.style.backgroundColor = "var(--p-surface-ground, #0c0d12)";
     header.style.borderTopLeftRadius = "12px";
     header.style.borderTopRightRadius = "12px";
-    
+
     const title = document.createElement("div");
     title.innerHTML = "✨ Link FX";
     title.style.color = "white";
     title.style.fontWeight = "bold";
-    
+
     const closeBtn = document.createElement("button");
     closeBtn.textContent = "✖";
     closeBtn.style.background = "none";
@@ -860,7 +862,7 @@ function toggleLegacyDialog() {
     closeBtn.style.cursor = "pointer";
     closeBtn.style.fontSize = "16px";
     closeBtn.onclick = toggleLegacyDialog;
-    
+
     header.appendChild(title);
     header.appendChild(closeBtn);
     legacyDialog.appendChild(header);
@@ -870,7 +872,7 @@ function toggleLegacyDialog() {
     content.style.overflowY = "auto";
     content.style.padding = "0";
     legacyDialog.content = content;
-    
+
     legacyDialog.appendChild(content);
     document.body.appendChild(legacyDialog);
 
@@ -892,7 +894,7 @@ function injectLegacyMenuButton() {
         btn.id = "linkfx-legacy-btn";
         btn.textContent = "✨ Link FX";
         btn.onclick = toggleLegacyDialog;
-        
+
         btn.style.width = "100%";
         btn.style.marginTop = "10px";
         btn.style.border = "1px solid var(--border-color, var(--p-surface-600, #444))";

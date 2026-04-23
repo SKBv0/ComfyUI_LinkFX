@@ -9,30 +9,30 @@ export const QUALITY_TIERS = [
         id: "eco",
         label: "Eco",
         description: "Large graphs, lean detail.",
-        targetFps: 28,
-        segmentScale: 0.6,
-        particleScale: 0.45,
-        glowScale: 0.6,
-        echoLimit: 2
+        targetFps: 18,
+        segmentScale: 0.5,
+        particleScale: 0.35,
+        glowScale: 0,
+        echoLimit: 1
     },
     {
         id: "balanced",
         label: "Balanced",
         description: "Default v2 mode.",
-        targetFps: 42,
+        targetFps: 24,
         segmentScale: 1,
         particleScale: 1,
-        glowScale: 1,
+        glowScale: 0.3,
         echoLimit: 3
     },
     {
         id: "cinema",
         label: "Cinema",
         description: "Highest polish for active scenes.",
-        targetFps: 55,
+        targetFps: 30,
         segmentScale: 1.35,
         particleScale: 1.3,
-        glowScale: 1.2,
+        glowScale: 0.6,
         echoLimit: 4
     }
 ];
@@ -675,8 +675,17 @@ export const CINEMA_PRESETS = [
     }
 ];
 
+const _lookupMaps = new WeakMap();
+function getLookupMap(list) {
+    let map = _lookupMaps.get(list);
+    if (!map) {
+        map = new Map(list.map((entry) => [entry.id, entry]));
+        _lookupMaps.set(list, map);
+    }
+    return map;
+}
+
 export function findById(list, id, fallbackId) {
-    const value = list.find((entry) => entry.id === id);
-    if (value) return value;
-    return list.find((entry) => entry.id === fallbackId) || list[0];
+    const map = getLookupMap(list);
+    return map.get(id) ?? map.get(fallbackId) ?? list[0];
 }

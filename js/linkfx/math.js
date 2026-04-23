@@ -171,6 +171,46 @@ export function sampleBezierPolyline(a, b, segments, cpScale = 0.3) {
     return points;
 }
 
+export function polylineLength(waypoints) {
+    if (!waypoints || waypoints.length < 2) return 0;
+    let total = 0;
+    for (let index = 1; index < waypoints.length; index++) {
+        const dx = waypoints[index][0] - waypoints[index - 1][0];
+        const dy = waypoints[index][1] - waypoints[index - 1][1];
+        total += Math.hypot(dx, dy);
+    }
+    return total;
+}
+
+export function sampleMultiWaypointBezier(waypoints, totalSegments, cpScale = 0.3) {
+    if (!waypoints || waypoints.length < 2) return [];
+    if (waypoints.length === 2) return sampleBezierPolyline(waypoints[0], waypoints[1], totalSegments, cpScale);
+
+    const safeTotal = Math.max(4, Math.round(totalSegments));
+    const lengths = [];
+    let total = 0;
+    for (let index = 1; index < waypoints.length; index++) {
+        const dx = waypoints[index][0] - waypoints[index - 1][0];
+        const dy = waypoints[index][1] - waypoints[index - 1][1];
+        const d = Math.hypot(dx, dy);
+        lengths.push(d);
+        total += d;
+    }
+    if (total === 0) return [{ x: waypoints[0][0], y: waypoints[0][1] }];
+
+    const result = [];
+    for (let index = 0; index < waypoints.length - 1; index++) {
+        const share = Math.max(2, Math.round(safeTotal * (lengths[index] / total)));
+        const segPoints = sampleBezierPolyline(waypoints[index], waypoints[index + 1], share, cpScale);
+        if (index === 0) {
+            result.push(...segPoints);
+        } else {
+            result.push(...segPoints.slice(1));
+        }
+    }
+    return result;
+}
+
 export function clonePoints(points) {
     return points.map((point) => ({ x: point.x, y: point.y }));
 }
@@ -227,9 +267,36 @@ export function samplePointOnPolyline(points, t) {
 export function resamplePolyline(points, segments) {
     if (!points?.length) return [];
     const safeSegments = Math.max(1, Math.round(segments));
+    if (points.length === 1) {
+        const sampled = [];
+        for (let i = 0; i <= safeSegments; i++) sampled.push({ x: points[0].x, y: points[0].y });
+        return sampled;
+    }
+
+    // Pre-compute cumulative lengths once
+    const lengths = [0];
+    let total = 0;
+    for (let i = 1; i < points.length; i++) {
+        total += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+        lengths.push(total);
+    }
+    if (total === 0) {
+        const sampled = [];
+        for (let i = 0; i <= safeSegments; i++) sampled.push({ x: points[0].x, y: points[0].y });
+        return sampled;
+    }
+
     const sampled = [];
-    for (let index = 0; index <= safeSegments; index++) {
-        sampled.push(samplePointOnPolyline(points, index / safeSegments));
+    let segIdx = 1;
+    for (let i = 0; i <= safeSegments; i++) {
+        const target = clamp(i / safeSegments, 0, 1) * total;
+        while (segIdx < lengths.length - 1 && lengths[segIdx] < target) segIdx++;
+        const segLen = lengths[segIdx] - lengths[segIdx - 1] || 1;
+        const localT = (target - lengths[segIdx - 1]) / segLen;
+        sampled.push({
+            x: lerp(points[segIdx - 1].x, points[segIdx].x, localT),
+            y: lerp(points[segIdx - 1].y, points[segIdx].y, localT)
+        });
     }
     return sampled;
 }

@@ -41,7 +41,7 @@ function stroke(ctx, points, color, width, alpha, shadowBlur = 0) {
     ctx.save();
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-    ctx.shadowBlur = shadowBlur;
+    ctx.shadowBlur = shadowBlur >= 1 ? shadowBlur : 0;
     ctx.strokeStyle = rgba(color, alpha);
     ctx.lineWidth = width;
     drawPolyline(ctx, points);
@@ -67,8 +67,10 @@ function rawStroke(ctx, points, color, width, shadowBlur = 0, shadowColor = colo
     ctx.save();
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-    ctx.shadowBlur = shadowBlur;
-    ctx.shadowColor = shadowColor;
+    if (shadowBlur >= 1) {
+        ctx.shadowBlur = shadowBlur;
+        ctx.shadowColor = shadowColor;
+    }
     ctx.strokeStyle = color;
     ctx.lineWidth = width;
     drawPolyline(ctx, points);
@@ -134,7 +136,7 @@ function drawLegacyNeonPulse(ctx, points, meta) {
     gradient.addColorStop(0.5, `hsla(${(hue + 30) % 360}, 100%, 65%, ${breath})`);
     gradient.addColorStop(1, `hsla(${hue}, 100%, 60%, ${breath})`);
 
-    rawStroke(ctx, points, `hsla(${hue}, 100%, 40%, 0.2)`, 8 * scale);
+    if (meta.glowBoost > 0) rawStroke(ctx, points, `hsla(${hue}, 100%, 40%, 0.2)`, 8 * scale);
     rawStroke(ctx, points, gradient, 4 * scale);
     rawStroke(ctx, points, `hsla(${hue}, 50%, 95%, 0.9)`, Math.max(1.2, 1.5 * scale));
 }
@@ -259,7 +261,7 @@ function drawLegacyElectric(ctx, points, meta) {
     ctx.save();
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-    ctx.shadowBlur = 10;
+    ctx.shadowBlur = 10 * meta.glowBoost;
     ctx.shadowColor = "rgba(100, 200, 255, 0.8)";
     traceLegacyPath(ctx, points, segments, (pos, point, index) => {
         if (index === 0 || index === segments) return point;
@@ -272,6 +274,7 @@ function drawLegacyElectric(ctx, points, meta) {
     ctx.lineWidth = Math.max(1.5, 2 * scale);
     ctx.stroke();
     ctx.shadowBlur = 0;
+    if (meta.glowBoost > 0) {
     traceLegacyPath(ctx, points, segments, (pos, point, index) => {
         if (index === 0 || index === segments) return point;
         return {
@@ -282,6 +285,7 @@ function drawLegacyElectric(ctx, points, meta) {
     ctx.strokeStyle = "rgba(50, 150, 255, 0.3)";
     ctx.lineWidth = 3 * scale;
     ctx.stroke();
+    }
     ctx.restore();
 }
 
@@ -382,9 +386,7 @@ function drawIonPulse(ctx, points, meta) {
     const palette = getPalette(meta);
     const width = meta.baseWidth;
     const carrier = withWave(points, meta.time * 0.22, 0.7 + meta.motion * 0.4, 5.5, 0.3, meta.seed + 18);
-    const sheen = withWave(points, meta.time * 0.35, 0.45, 9, 1.1, meta.seed + 71);
 
-    rawStroke(ctx, carrier, rgba(palette.base, 0.16), width * 3.6);
     rawStroke(ctx, carrier, createGradientAlongLine(ctx, carrier, [
         { offset: 0, color: palette.base, alpha: 0.12 },
         { offset: 0.28, color: palette.accent, alpha: 0.52 },
@@ -394,34 +396,31 @@ function drawIonPulse(ctx, points, meta) {
     ]), width * 1.45, 12 * meta.glowBoost, rgba(palette.glow, 0.2));
     stroke(ctx, carrier, palette.secondary, width * 0.3, 0.92, 0);
 
-    ctx.save();
-    ctx.globalCompositeOperation = "screen";
-    stroke(ctx, sheen, palette.glow, width * 0.12, 0.18, 0);
-    const phase = (meta.time * 0.00016) % 1;
-    const point = samplePointOnPolyline(carrier, phase);
-    const highlight = ctx.createRadialGradient(point.x, point.y, 0, point.x, point.y, width * 8);
-    highlight.addColorStop(0, rgba(palette.secondary, 0.22));
-    highlight.addColorStop(0.45, rgba(palette.glow, 0.12));
-    highlight.addColorStop(1, rgba(palette.glow, 0));
-    ctx.beginPath();
-    ctx.arc(point.x, point.y, width * 8, 0, Math.PI * 2);
-    ctx.fillStyle = highlight;
-    ctx.fill();
-    ctx.restore();
+    if (!meta.lite) {
+        rawStroke(ctx, carrier, rgba(palette.base, 0.16), width * 3.6);
+        const sheen = withWave(points, meta.time * 0.35, 0.45, 9, 1.1, meta.seed + 71);
+        ctx.save();
+        ctx.globalCompositeOperation = "screen";
+        stroke(ctx, sheen, palette.glow, width * 0.12, 0.18, 0);
+        const phase = (meta.time * 0.00016) % 1;
+        const point = samplePointOnPolyline(carrier, phase);
+        const highlight = ctx.createRadialGradient(point.x, point.y, 0, point.x, point.y, width * 8);
+        highlight.addColorStop(0, rgba(palette.secondary, 0.22));
+        highlight.addColorStop(0.45, rgba(palette.glow, 0.12));
+        highlight.addColorStop(1, rgba(palette.glow, 0));
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, width * 8, 0, Math.PI * 2);
+        ctx.fillStyle = highlight;
+        ctx.fill();
+        ctx.restore();
+    }
 }
 
 function drawEmberCable(ctx, points, meta) {
     const palette = getPalette(meta);
     const width = meta.baseWidth * 1.08;
     const forged = withWave(points, meta.time * 0.56, 1.1 + meta.motion * 0.9, 6.4, 0.5, meta.seed + 33);
-    const seam = withWave(forged, meta.time * 0.24, 0.35, 11, 1.6, meta.seed + 59);
-    const heat = withWave(forged, meta.time * 0.18, 3.2, 4.4, 0.8, meta.seed + 95)
-        .map((point, index) => ({
-            x: point.x,
-            y: point.y - (index / Math.max(1, forged.length - 1)) * 2.4
-        }));
 
-    rawStroke(ctx, forged, rgba(palette.base, 0.26), width * 4);
     rawStroke(ctx, forged, createGradientAlongLine(ctx, forged, [
         { offset: 0, color: palette.base, alpha: 0.22 },
         { offset: 0.4, color: palette.accent, alpha: 0.62 },
@@ -429,23 +428,30 @@ function drawEmberCable(ctx, points, meta) {
         { offset: 0.72, color: palette.glow, alpha: 0.34 },
         { offset: 1, color: palette.base, alpha: 0.16 }
     ]), width * 1.74, 8 * meta.glowBoost, rgba(palette.accent, 0.16));
-    stroke(ctx, seam, palette.secondary, width * 0.22, 0.32, 0);
+    stroke(ctx, forged, palette.secondary, width * 0.22, 0.42, 0);
 
-    ctx.save();
-    ctx.globalCompositeOperation = "lighter";
-    stroke(ctx, heat, palette.glow, width * 0.92, 0.06, 0);
-    stroke(ctx, heat, palette.accent, width * 0.42, 0.08, 0);
-    ctx.restore();
+    if (!meta.lite) {
+        rawStroke(ctx, forged, rgba(palette.base, 0.26), width * 4);
+        const seam = withWave(forged, meta.time * 0.24, 0.35, 11, 1.6, meta.seed + 59);
+        const heat = withWave(forged, meta.time * 0.18, 3.2, 4.4, 0.8, meta.seed + 95)
+            .map((point, index) => ({
+                x: point.x,
+                y: point.y - (index / Math.max(1, forged.length - 1)) * 2.4
+            }));
+        stroke(ctx, seam, palette.secondary, width * 0.22, 0.32, 0);
+        ctx.save();
+        ctx.globalCompositeOperation = "lighter";
+        stroke(ctx, heat, palette.glow, width * 0.92, 0.06, 0);
+        stroke(ctx, heat, palette.accent, width * 0.42, 0.08, 0);
+        ctx.restore();
+    }
 }
 
 function drawAuroraFiber(ctx, points, meta) {
     const palette = getPalette(meta);
     const width = meta.baseWidth;
     const spine = withWave(points, meta.time * 0.34, 0.8 + meta.motion * 0.4, 7.8, 0.4, meta.seed + 121);
-    const upper = withWave(spine, meta.time * 0.18, 1.25, 10.2, 0.9, meta.seed + 147);
-    const lower = withWave(spine, meta.time * 0.24, -1.1, 8.8, 1.7, meta.seed + 173);
 
-    rawStroke(ctx, spine, rgba(palette.base, 0.14), width * 2.8);
     rawStroke(ctx, spine, createGradientAlongLine(ctx, spine, [
         { offset: 0, color: palette.accent, alpha: 0.16 },
         { offset: 0.3, color: palette.glow, alpha: 0.44 },
@@ -453,9 +459,15 @@ function drawAuroraFiber(ctx, points, meta) {
         { offset: 0.72, color: palette.glow, alpha: 0.4 },
         { offset: 1, color: palette.accent, alpha: 0.14 }
     ]), width * 1.22, 10 * meta.glowBoost, rgba(palette.glow, 0.22));
-    stroke(ctx, upper, palette.accent, width * 0.28, 0.16, 0);
-    stroke(ctx, lower, palette.glow, width * 0.22, 0.14, 0);
     stroke(ctx, spine, palette.secondary, width * 0.2, 0.88, 0);
+
+    if (!meta.lite) {
+        rawStroke(ctx, spine, rgba(palette.base, 0.14), width * 2.8);
+        const upper = withWave(spine, meta.time * 0.18, 1.25, 10.2, 0.9, meta.seed + 147);
+        const lower = withWave(spine, meta.time * 0.24, -1.1, 8.8, 1.7, meta.seed + 173);
+        stroke(ctx, upper, palette.accent, width * 0.28, 0.16, 0);
+        stroke(ctx, lower, palette.glow, width * 0.22, 0.14, 0);
+    }
 }
 
 function drawPulseArtery(ctx, points, meta) {
@@ -487,14 +499,7 @@ function drawColdSpark(ctx, points, meta) {
     const palette = getPalette(meta);
     const width = meta.baseWidth * 0.88;
     const blade = jitterPoints(points, meta.seed + 17, meta.time, 1 + meta.motion * 1.2, 18);
-    const ghost = withWave(points, meta.time * 0.85, 3.2 + meta.motion * 1.4, 8.4, 0.5, meta.seed + 221);
-    const echo = withWave(points, meta.time * 0.62, -2.4, 9.6, 1.4, meta.seed + 257);
 
-    ctx.save();
-    ctx.setLineDash([18, 11]);
-    rawStroke(ctx, ghost, rgba(palette.accent, 0.18), width * 1.8, 8 * meta.glowBoost, rgba(palette.glow, 0.18));
-    ctx.setLineDash([]);
-    rawStroke(ctx, echo, rgba(palette.glow, 0.1), width * 1.12);
     rawStroke(ctx, blade, createGradientAlongLine(ctx, blade, [
         { offset: 0, color: palette.base, alpha: 0.12 },
         { offset: 0.42, color: palette.accent, alpha: 0.34 },
@@ -503,41 +508,51 @@ function drawColdSpark(ctx, points, meta) {
         { offset: 1, color: palette.base, alpha: 0.12 }
     ]), width * 1.06, 11 * meta.glowBoost, rgba(palette.glow, 0.24));
     stroke(ctx, blade, palette.secondary, width * 0.14, 0.96, 0);
-    ctx.restore();
+
+    if (!meta.lite) {
+        const ghost = withWave(points, meta.time * 0.85, 3.2 + meta.motion * 1.4, 8.4, 0.5, meta.seed + 221);
+        const echo = withWave(points, meta.time * 0.62, -2.4, 9.6, 1.4, meta.seed + 257);
+        ctx.save();
+        ctx.setLineDash([18, 11]);
+        rawStroke(ctx, ghost, rgba(palette.accent, 0.18), width * 1.8, 8 * meta.glowBoost, rgba(palette.glow, 0.18));
+        ctx.setLineDash([]);
+        rawStroke(ctx, echo, rgba(palette.glow, 0.1), width * 1.12);
+        ctx.restore();
+    }
 }
 
 function drawCandyVoltage(ctx, points, meta) {
     const palette = getPalette(meta);
     const width = meta.baseWidth * 1.02;
     const lacquer = withWave(points, meta.time * 0.95, 2.1 + meta.motion * 1.6, 8.5, 0.2, meta.seed + 211);
-    const underside = withWave(points, meta.time * 0.54, -1.4, 5.8, 1.2, meta.seed + 287);
 
-    rawStroke(ctx, lacquer, rgba(palette.base, 0.18), width * 3.2);
     rawStroke(ctx, lacquer, createGradientAlongLine(ctx, lacquer, [
         { offset: 0, color: palette.accent, alpha: 0.46 },
         { offset: 0.34, color: palette.glow, alpha: 0.76 },
         { offset: 0.7, color: palette.secondary, alpha: 0.7 },
         { offset: 1, color: palette.accent, alpha: 0.36 }
     ]), width * 1.62, 12 * meta.glowBoost, rgba(palette.glow, 0.24));
-    stroke(ctx, underside, palette.accent, width * 0.64, 0.22, 0);
     stroke(ctx, lacquer, palette.secondary, width * 0.28, 0.8, 0);
 
-    ctx.save();
-    ctx.globalCompositeOperation = "screen";
-    for (let index = 0; index < 2; index++) {
-        const glaze = withWave(lacquer, meta.time * (0.32 + index * 0.11), 0.9 + index * 0.4, 14 + index * 2, index * 0.9, meta.seed + index * 41);
-        stroke(ctx, glaze, index === 0 ? palette.glow : palette.secondary, width * (0.16 + index * 0.04), 0.16, 0);
+    if (!meta.lite) {
+        rawStroke(ctx, lacquer, rgba(palette.base, 0.18), width * 3.2);
+        const underside = withWave(points, meta.time * 0.54, -1.4, 5.8, 1.2, meta.seed + 287);
+        stroke(ctx, underside, palette.accent, width * 0.64, 0.22, 0);
+        ctx.save();
+        ctx.globalCompositeOperation = "screen";
+        for (let index = 0; index < 2; index++) {
+            const glaze = withWave(lacquer, meta.time * (0.32 + index * 0.11), 0.9 + index * 0.4, 14 + index * 2, index * 0.9, meta.seed + index * 41);
+            stroke(ctx, glaze, index === 0 ? palette.glow : palette.secondary, width * (0.16 + index * 0.04), 0.16, 0);
+        }
+        ctx.restore();
     }
-    ctx.restore();
 }
 
 function drawToxicLime(ctx, points, meta) {
     const palette = getPalette(meta);
     const width = meta.baseWidth;
     const caustic = jitterPoints(points, meta.seed + 57, meta.time, 2.7 + meta.motion * 2.2, 16);
-    const vapor = withWave(points, meta.time * 0.72, 4.6, 6.2, 0.6, meta.seed + 145);
 
-    rawStroke(ctx, caustic, rgba(palette.base, 0.26), width * 3.3);
     rawStroke(ctx, caustic, createGradientAlongLine(ctx, caustic, [
         { offset: 0, color: palette.base, alpha: 0.16 },
         { offset: 0.48, color: palette.accent, alpha: 0.62 },
@@ -545,17 +560,21 @@ function drawToxicLime(ctx, points, meta) {
     ]), width * 1.24, 10 * meta.glowBoost, rgba(palette.glow, 0.2));
     stroke(ctx, caustic, palette.secondary, width * 0.34, 0.66, 0);
 
-    ctx.save();
-    ctx.globalCompositeOperation = "lighter";
-    for (let layer = 0; layer < 3; layer++) {
-        const haze = withWave(vapor, meta.time * (0.28 + layer * 0.08), 3.2 + layer * 1.2, 5 + layer * 1.8, layer * 0.7, meta.seed + 420 + layer * 9)
-            .map((point, index) => ({
-                x: point.x,
-                y: point.y - (index / Math.max(1, points.length - 1)) * (3 + layer * 2)
-            }));
-        stroke(ctx, haze, layer === 0 ? palette.glow : palette.accent, width * (1.08 - layer * 0.18), 0.06 + (2 - layer) * 0.03, 0);
+    if (!meta.lite) {
+        rawStroke(ctx, caustic, rgba(palette.base, 0.26), width * 3.3);
+        const vapor = withWave(points, meta.time * 0.72, 4.6, 6.2, 0.6, meta.seed + 145);
+        ctx.save();
+        ctx.globalCompositeOperation = "lighter";
+        for (let layer = 0; layer < 3; layer++) {
+            const haze = withWave(vapor, meta.time * (0.28 + layer * 0.08), 3.2 + layer * 1.2, 5 + layer * 1.8, layer * 0.7, meta.seed + 420 + layer * 9)
+                .map((point, index) => ({
+                    x: point.x,
+                    y: point.y - (index / Math.max(1, points.length - 1)) * (3 + layer * 2)
+                }));
+            stroke(ctx, haze, layer === 0 ? palette.glow : palette.accent, width * (1.08 - layer * 0.18), 0.06 + (2 - layer) * 0.03, 0);
+        }
+        ctx.restore();
     }
-    ctx.restore();
 }
 
 function drawCopperCoil(ctx, points, meta) {
@@ -826,6 +845,8 @@ export const EFFECTS = [
     { id: "legacy_starlight", label: "Legacy Starlight", draw: drawLegacyStarlight }
 ];
 
+const _effectMap = new Map(EFFECTS.map((e) => [e.id, e]));
+
 export function getEffectById(effectId) {
-    return EFFECTS.find((effect) => effect.id === effectId) || null;
+    return _effectMap.get(effectId) || null;
 }

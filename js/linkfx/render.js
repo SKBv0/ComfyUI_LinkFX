@@ -1,5 +1,17 @@
 import { getEffectById } from "./effects.js";
-import { clonePoints, drawPolyline, getLinkKey, resamplePolyline, rotateHue, rgba, sampleBezierPolyline, seededNoise, seedFromString } from "./math.js";
+import {
+    clonePoints,
+    drawPolyline,
+    getLinkKey,
+    polylineLength,
+    resamplePolyline,
+    rotateHue,
+    rgba,
+    sampleBezierPolyline,
+    sampleMultiWaypointBezier,
+    seededNoise,
+    seedFromString
+} from "./math.js";
 import { getPhysicsPoints, resetPhysics } from "./physics.js";
 import { getRenderTime, getState, resolveRuntimeConfig, subscribe } from "./state.js";
 
@@ -9,6 +21,11 @@ let animationFrameId = null;
 let originalMethod = null;
 const echoHistory = new Map();
 let lastEchoCleanup = 0;
+
+const drawnLinksThisFrame = new Set();
+let lastFrameStamp = -1;
+let _frameRuntime = null;
+let _frameSelectedIds = null;
 
 function markDirty() {
     if (!appRef) return;
@@ -53,9 +70,17 @@ function ensureAnimationLoop() {
 }
 
 function getSelectedNodeIds() {
+    if (_frameSelectedIds) return _frameSelectedIds;
     const selected = appRef?.canvas?.selected_nodes;
-    if (!selected) return new Set();
-    return new Set(Object.keys(selected).map((id) => Number.parseInt(id, 10)));
+    if (!selected) { _frameSelectedIds = new Set(); return _frameSelectedIds; }
+    _frameSelectedIds = new Set(Object.keys(selected).map((id) => Number.parseInt(id, 10)));
+    return _frameSelectedIds;
+}
+
+function getFrameRuntime() {
+    if (_frameRuntime) return _frameRuntime;
+    _frameRuntime = resolveRuntimeConfig(getState());
+    return _frameRuntime;
 }
 
 function shouldEnhanceLink(link, state) {
@@ -103,12 +128,14 @@ function drawBaseCable(ctx, points, meta) {
     ctx.save();
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-    ctx.shadowBlur = 8 * meta.glowBoost;
-    ctx.strokeStyle = rgba(meta.shiftedPalette.glow, 0.22);
-    ctx.lineWidth = meta.baseWidth * 2.2;
-    drawPolyline(ctx, points);
-    ctx.stroke();
-    ctx.shadowBlur = 0;
+    if (meta.glowBoost > 0) {
+        ctx.shadowBlur = 8 * meta.glowBoost;
+        ctx.strokeStyle = rgba(meta.shiftedPalette.glow, 0.22);
+        ctx.lineWidth = meta.baseWidth * 2.2;
+        drawPolyline(ctx, points);
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+    }
     ctx.strokeStyle = rgba(meta.shiftedOriginalColor || meta.shiftedPalette.accent, 0.92);
     ctx.lineWidth = meta.baseWidth;
     drawPolyline(ctx, points);
@@ -164,6 +191,7 @@ function buildMeta({ linkKey, len, detail, runtime, now, color, motion, isSelect
         glow: rotateHue(runtime.preset.palette.glow, runtime.hueShift),
         base: rotateHue(runtime.preset.palette.base, runtime.hueShift)
     };
+    const tierId = runtime.qualityTier.id;
     return {
         time: now,
         seed: seedFromString(linkKey),
@@ -179,68 +207,216 @@ function buildMeta({ linkKey, len, detail, runtime, now, color, motion, isSelect
         shiftedPalette,
         preset: runtime.preset,
         runtime,
-        isSelected
+        isSelected,
+        lite: tierId === "eco" || tierId === "balanced"
     };
+}
+
+function hasAnyEnhancement(runtime) {
+    return Boolean(
+        runtime.preset.effectId ||
+        runtime.physicsEnabled ||
+        runtime.graphWeather.id !== "none" ||
+        runtime.temporalEchoEnabled
+    );
+}
+
+function collectReroutePath(canvas, link) {
+    if (!link || link.id == null) return null;
+
+    const graph = canvas?.graph;
+
+    // Fast path: use ComfyUI's built-in reroute chain via link.parentId
+    if (graph?.reroutes && link.parentId !== undefined) {
+        const rootReroute = graph.reroutes.get(link.parentId);
+        if (rootReroute && typeof rootReroute.getReroutes === "function") {
+            const chain = rootReroute.getReroutes();
+            if (chain?.length) return chain;
+        }
+    }
+
+    // Fallback: scan the reroute map manually (supports both old and new locations)
+    const rerouteMap = graph?.reroutes ?? canvas?.reroutes;
+    if (!rerouteMap || typeof rerouteMap.values !== "function") return null;
+
+    const related = [];
+    for (const r of rerouteMap.values()) {
+        const linkIds = r?.linkIds;
+        if (!linkIds) continue;
+        const has = typeof linkIds.has === "function"
+            ? linkIds.has(link.id)
+            : Array.isArray(linkIds) ? linkIds.includes(link.id) : false;
+        if (has) related.push(r);
+    }
+    if (!related.length) return null;
+
+    const byId = new Map(related.map((r) => [r.id, r]));
+    const childOf = new Map();
+    for (const r of related) {
+        if (r.parentId != null) childOf.set(r.parentId, r);
+    }
+
+    let root = related.find((r) => r.parentId == null || !byId.has(r.parentId));
+    if (!root) root = related[0];
+
+    const ordered = [];
+    const guard = new Set();
+    let cur = root;
+    while (cur && !guard.has(cur.id)) {
+        guard.add(cur.id);
+        ordered.push(cur);
+        cur = childOf.get(cur.id);
+    }
+    for (const r of related) {
+        if (!guard.has(r.id)) ordered.push(r);
+    }
+    return ordered;
+}
+
+function getNodeSlotPos(graph, nodeId, slot, isInput) {
+    if (!graph || nodeId == null) return null;
+    const node = graph.getNodeById?.(nodeId);
+    if (!node || typeof node.getConnectionPos !== "function") return null;
+    const out = [0, 0];
+    try {
+        node.getConnectionPos(isInput, slot, out);
+    } catch {
+        return null;
+    }
+    return out;
+}
+
+function renderCable(canvas, ctx, waypoints, link, rest) {
+    if (!waypoints || waypoints.length < 2) return;
+
+    const runtime = getFrameRuntime();
+    const a = waypoints[0];
+    const b = waypoints[waypoints.length - 1];
+
+    if (!shouldEnhanceLink(link, runtime)) {
+        for (let i = 0; i < waypoints.length - 1; i++) {
+            originalMethod.call(canvas, ctx, waypoints[i], waypoints[i + 1], link, ...rest);
+        }
+        return;
+    }
+
+    const isMulti = waypoints.length > 2;
+    const totalLen = isMulti ? polylineLength(waypoints) : Math.hypot(b[0] - a[0], b[1] - a[1]);
+    const linkKey = getLinkKey(link, a, b);
+    const selectedIds = getSelectedNodeIds();
+    const isSelected = link ? selectedIds.has(link.origin_id) || selectedIds.has(link.target_id) : selectedIds.size > 0;
+    const detail = getDetailLevel(totalLen, runtime, isSelected);
+
+    let segmentLengths = null;
+    if (isMulti) {
+        segmentLengths = [];
+        for (let i = 1; i < waypoints.length; i++) {
+            segmentLengths.push(Math.hypot(
+                waypoints[i][0] - waypoints[i - 1][0],
+                waypoints[i][1] - waypoints[i - 1][1]
+            ));
+        }
+    }
+
+    const now = getRenderTime(runtime);
+    const physics = getPhysicsPoints({
+        linkKey,
+        a,
+        b,
+        len: totalLen,
+        waypoints: isMulti ? waypoints : undefined,
+        segmentLengths: segmentLengths || undefined,
+        profile: runtime.physicsProfile,
+        enabled: runtime.physicsEnabled,
+        now
+    });
+
+    let basePoints;
+    if (physics.points) {
+        basePoints = resamplePolyline(physics.points, detail.segments);
+    } else if (isMulti) {
+        basePoints = sampleMultiWaypointBezier(waypoints, detail.segments);
+    } else {
+        basePoints = sampleBezierPolyline(a, b, detail.segments);
+    }
+
+    const points = applyWeather(basePoints, runtime.graphWeather, linkKey, now);
+    const meta = buildMeta({
+        linkKey,
+        len: totalLen,
+        detail,
+        runtime,
+        now,
+        color: rest[2] || "rgba(150, 150, 150, 0.8)",
+        motion: physics.motion,
+        isSelected
+    });
+
+    updateEchoHistory(linkKey, points, now, runtime, physics.motion);
+    drawEchoes(ctx, linkKey, meta);
+
+    const effect = getEffectById(runtime.preset.effectId);
+    if (effect) {
+        effect.draw(ctx, points, meta);
+        return;
+    }
+
+    if (runtime.physicsEnabled || runtime.graphWeather.id !== "none" || runtime.temporalEchoEnabled) {
+        drawBaseCable(ctx, points, meta);
+        return;
+    }
+
+    for (let i = 0; i < waypoints.length - 1; i++) {
+        originalMethod.call(canvas, ctx, waypoints[i], waypoints[i + 1], link, ...rest);
+    }
 }
 
 function patchCanvasMethod(proto, methodName) {
     originalMethod = proto[methodName];
 
     proto[methodName] = function (ctx, a, b, link, ...rest) {
-        if (!ctx || !Array.isArray(a) || !Array.isArray(b)) {
+        const isPointLike = (v) => v && typeof v.length === "number" && v.length >= 2
+            && Number.isFinite(v[0]) && Number.isFinite(v[1]);
+        if (!ctx || !isPointLike(a) || !isPointLike(b)) {
             return originalMethod.call(this, ctx, a, b, link, ...rest);
         }
 
-        const runtime = resolveRuntimeConfig(getState());
-        if (!shouldEnhanceLink(link, runtime)) {
+        const frameStamp = this.last_draw_time ?? performance.now();
+        if (frameStamp !== lastFrameStamp) {
+            drawnLinksThisFrame.clear();
+            lastFrameStamp = frameStamp;
+            _frameRuntime = null;
+            _frameSelectedIds = null;
+        }
+
+        const options = rest[5];
+        const isReroutedSegment = Boolean(options && (options.reroute || options.startControl));
+
+        if (isReroutedSegment && link?.id != null) {
+            if (drawnLinksThisFrame.has(link.id)) return;
+
+            const runtime = getFrameRuntime();
+            if (!shouldEnhanceLink(link, runtime) || !hasAnyEnhancement(runtime)) {
+                return originalMethod.call(this, ctx, a, b, link, ...rest);
+            }
+
+            const chain = collectReroutePath(this, link);
+            if (chain?.length) {
+                const originPos = getNodeSlotPos(this.graph, link.origin_id, link.origin_slot, false) ?? a;
+                const targetPos = getNodeSlotPos(this.graph, link.target_id, link.target_slot, true) ?? b;
+                const waypoints = [
+                    [originPos[0], originPos[1]],
+                    ...chain.map((r) => [r.pos[0], r.pos[1]]),
+                    [targetPos[0], targetPos[1]]
+                ];
+                drawnLinksThisFrame.add(link.id);
+                renderCable(this, ctx, waypoints, link, rest);
+                return;
+            }
             return originalMethod.call(this, ctx, a, b, link, ...rest);
         }
 
-        const now = getRenderTime(runtime);
-        const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
-        const linkKey = getLinkKey(link, a, b);
-        const selectedIds = getSelectedNodeIds();
-        const isSelected = link ? selectedIds.has(link.origin_id) || selectedIds.has(link.target_id) : selectedIds.size > 0;
-        const detail = getDetailLevel(len, runtime, isSelected);
-        const physics = getPhysicsPoints({
-            linkKey,
-            a,
-            b,
-            len,
-            profile: runtime.physicsProfile,
-            enabled: runtime.physicsEnabled,
-            now
-        });
-        const basePoints = physics.points
-            ? resamplePolyline(physics.points, detail.segments)
-            : sampleBezierPolyline(a, b, detail.segments);
-        const points = applyWeather(basePoints, runtime.graphWeather, linkKey, now);
-        const meta = buildMeta({
-            linkKey,
-            len,
-            detail,
-            runtime,
-            now,
-            color: rest[2] || "rgba(150, 150, 150, 0.8)",
-            motion: physics.motion,
-            isSelected
-        });
-
-        updateEchoHistory(linkKey, points, now, runtime, physics.motion);
-        drawEchoes(ctx, linkKey, meta);
-
-        const effect = getEffectById(runtime.preset.effectId);
-        if (effect) {
-            effect.draw(ctx, points, meta);
-            return;
-        }
-
-        if (runtime.physicsEnabled || runtime.graphWeather.id !== "none" || runtime.temporalEchoEnabled) {
-            drawBaseCable(ctx, points, meta);
-            return;
-        }
-
-        return originalMethod.call(this, ctx, a, b, link, ...rest);
+        renderCable(this, ctx, [a, b], link, rest);
     };
 }
 
