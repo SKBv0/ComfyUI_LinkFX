@@ -2,6 +2,7 @@ import { clamp, lerp, seedFromString } from "./math.js";
 
 const ropeStates = new Map();
 let lastCleanup = 0;
+const PHYSICS_STEP_MS = 25; // fixed physics timestep (~40 steps/sec)
 
 function getRestPoint(a, b, len, profile, t, time, seed) {
     const sag = Math.min(len * profile.sagFactor, profile.maxSag) * 4 * t * (1 - t);
@@ -303,7 +304,6 @@ export function getPhysicsPoints({ linkKey, a, b, len, profile, enabled, now, wa
             state = createMultiState(waypoints, segmentLengths, totalLen, profile, now, seed);
             ropeStates.set(linkKey, state);
         }
-        state.lastSeen = now;
 
         let changedLengths = false;
         for (let i = 0; i < segmentLengths.length; i++) {
@@ -318,15 +318,21 @@ export function getPhysicsPoints({ linkKey, a, b, len, profile, enabled, now, wa
             state.restLengths = buildRestLengths(state.segmentLengths, state.pointsPerSeg);
         }
 
-        runMulti(state, waypoints, profile, now);
+        const elapsed = now - state.lastSeen;
+        const steps = Math.min(4, Math.max(1, Math.round(elapsed / PHYSICS_STEP_MS)));
+        state.lastSeen = now;
+        for (let s = 0; s < steps; s++) runMulti(state, waypoints, profile, now);
     } else {
         const safeLength = Math.max(12, len);
         if (!state || state.mode !== "simple" || state.points.length !== profile.segments + 1) {
             state = createState(a, b, safeLength, profile, now, seed);
             ropeStates.set(linkKey, state);
         }
+
+        const elapsed = now - state.lastSeen;
+        const steps = Math.min(4, Math.max(1, Math.round(elapsed / PHYSICS_STEP_MS)));
         state.lastSeen = now;
-        runSimple(state, a, b, safeLength, profile, now, seed);
+        for (let s = 0; s < steps; s++) runSimple(state, a, b, safeLength, profile, now, seed);
     }
 
     if (ropeStates.size > 120 && now - lastCleanup > 2500) {
