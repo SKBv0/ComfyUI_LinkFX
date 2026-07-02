@@ -1,0 +1,23 @@
+[project]
+name = "ComfyUI_LinkFX"
+version = "2.0.0"
+description = "Visual effects for ComfyUI links (wires) with animated presets and physics profiles."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "SKBv0" }
+]
+keywords = ["comfyui", "links", "wires", "effects", "animation", "frontend-extension"]
+classifiers = [
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+]
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/SKBv0/ComfyUI_LinkFX"
+"Bug Tracker" = "https://github.com/SKBv0/ComfyUI_LinkFX/issues"
+
+[tool.comfy]
+PublisherId = "skb"
+DisplayName = "ComfyUI LinkFX"
