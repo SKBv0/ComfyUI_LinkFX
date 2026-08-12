@@ -72,9 +72,13 @@ function ensureAnimationLoop() {
 function getSelectedNodeIds() {
     if (_frameSelectedIds) return _frameSelectedIds;
     const selected = appRef?.canvas?.selected_nodes;
-    if (!selected) { _frameSelectedIds = new Set(); return _frameSelectedIds; }
-    _frameSelectedIds = new Set(Object.keys(selected).map((id) => Number.parseInt(id, 10)));
+    // Node ids can be numbers or strings depending on frontend version, so keep them as strings.
+    _frameSelectedIds = new Set(Object.keys(selected || {}));
     return _frameSelectedIds;
+}
+
+function isNodeSelected(selected, nodeId) {
+    return nodeId != null && selected.has(String(nodeId));
 }
 
 function getFrameRuntime() {
@@ -89,7 +93,7 @@ function shouldEnhanceLink(link, state) {
     const selected = getSelectedNodeIds();
     if (!selected.size) return false;
     if (!link) return true;
-    return selected.has(link.origin_id) || selected.has(link.target_id);
+    return isNodeSelected(selected, link.origin_id) || isNodeSelected(selected, link.target_id);
 }
 
 function getDetailLevel(len, runtime, isSelected) {
@@ -304,7 +308,9 @@ function renderCable(canvas, ctx, waypoints, link, rest) {
     const totalLen = isMulti ? polylineLength(waypoints) : Math.hypot(b[0] - a[0], b[1] - a[1]);
     const linkKey = getLinkKey(link, a, b);
     const selectedIds = getSelectedNodeIds();
-    const isSelected = link ? selectedIds.has(link.origin_id) || selectedIds.has(link.target_id) : selectedIds.size > 0;
+    const isSelected = link
+        ? isNodeSelected(selectedIds, link.origin_id) || isNodeSelected(selectedIds, link.target_id)
+        : selectedIds.size > 0;
     const detail = getDetailLevel(totalLen, runtime, isSelected);
 
     let segmentLengths = null;
